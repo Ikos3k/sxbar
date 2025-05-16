@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <pthread.h>
 
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
@@ -17,8 +19,9 @@ static void hdl_dummy(XEvent *xev);
 static void hdl_expose(XEvent *xev);
 static void hdl_property(XEvent *xev);
 static ulong parse_col(const char *hex);
-static void run(void);
+static void *run(void *unused);
 static void setup(void);
+static void update_time(void);
 static void xev_cases(XEvent *xev);
 
 static EventHandler evtable[LASTEvent];
@@ -154,6 +157,7 @@ hdl_expose(XEvent *xev)
 {
 	(void) xev;
 	XClearWindow(dpy, win);
+	update_time();
 
 	int current_ws = get_current_workspace();
 	int name_count = 0;
@@ -178,13 +182,6 @@ hdl_expose(XEvent *xev)
 		}
 		free(names);
 	}
-
-	int bar_width = DisplayWidth(dpy, scr) - (2 * BAR_HORI_PAD);
-	int version_width = XTextWidth(font, SXBAR_VERSION, strlen(SXBAR_VERSION));
-	int version_x = bar_width - version_width - BAR_TEXT_PAD;
-
-	XDrawString(dpy, win, gc, version_x, text_y,
-			SXBAR_VERSION, strlen(SXBAR_VERSION));
 }
 
 static void
@@ -218,14 +215,36 @@ parse_col(const char *hex)
 }
 
 static void
-run(void)
+update_time(void)
 {
-	XEvent xev;
+	int bar_width = DisplayWidth(dpy, scr);
+	uint text_y = (BAR_HEIGHT + font->ascent - font->descent) / 2;
 
-	for (;;) {
-		XNextEvent(dpy, &xev);
-		xev_cases(&xev);
+	time_t now = time(NULL);
+	struct tm *tm = localtime(&now);
+	char time_str[64];
+	strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm);
+
+	int version_width = XTextWidth(font, time_str, strlen(time_str));
+	int version_x = bar_width - version_width;
+
+	XSetForeground(dpy, gc, bg_col);
+	XFillRectangle(dpy, win, gc, version_x, 0, version_width + BAR_TEXT_PAD, BAR_HEIGHT);
+	XSetForeground(dpy, gc, fg_col);
+
+	XDrawString(dpy, win, gc, version_x, text_y,
+			time_str, strlen(time_str));
+	XFlush(dpy);
+}
+
+static void *
+run(void *unused)
+{
+	while (1) {
+		update_time();
+		sleep(1);
 	}
+	return NULL;
 }
 
 static void
@@ -247,6 +266,11 @@ setup(void)
 	bg_col = parse_col(BAR_COLOR_BG);
 	border_col = parse_col(BAR_COLOR_BORDER);
 	create_win();
+
+	pthread_t time_thread;
+	if (pthread_create(&time_thread, NULL, run, NULL) != 0) {
+		errx(1, "Failed to create time update thread");
+	}
 }
 
 static void
@@ -269,6 +293,12 @@ main(int ac, char **av)
 	}
 
 	setup();
-	run();
+
+	XEvent xev;
+	while (1) {
+		XNextEvent(dpy, &xev);
+		xev_cases(&xev);
+	}
+
 	return 0;
 }
